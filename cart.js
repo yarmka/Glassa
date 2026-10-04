@@ -19,7 +19,6 @@ import {
   getDoc,
   setDoc,
   updateDoc,
-  deleteDoc,
   addDoc,
   collection,
   query,
@@ -39,17 +38,14 @@ import {
   toastInfo,
   openModal,
   confirmDialog,
-  skeletonGrid,
   skeletonLines,
   emptyState,
   formatDate,
   cloudinaryThumb,
-  normalizeUnlockCode,
-  copyToClipboard,
-  debounce
+  normalizeUnlockCode
 } from "./ui.js";
 import { getUser, getProfile, isVerified } from "./auth.js";
-import { getGame, effectivePrice, hasActiveOffer } from "./catalog.js";
+import { getGame, effectivePrice } from "./catalog.js";
 
 /* ============================================================================
    Cart storage (localStorage)
@@ -57,10 +53,8 @@ import { getGame, effectivePrice, hasActiveOffer } from "./catalog.js";
 
 const CART_KEY = "glassa.cart";
 
-/** In-memory cart of gameIds. */
 let cart = [];
 
-/** Read from localStorage into memory. Safe to call multiple times. */
 export function loadCartFromStorage() {
   try {
     const raw = localStorage.getItem(CART_KEY);
@@ -76,16 +70,10 @@ function persistCart() {
   try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch (_) {}
 }
 
-/** Count of items in cart (used by nav badge). */
 export function cartCount() { return cart.length; }
 
-/** Is the given gameId in the cart? */
 export function isInCart(gameId) { return cart.includes(gameId); }
 
-/**
- * Add a game to the cart. Requires login + verified email.
- * @returns {Promise<boolean>}
- */
 export async function addToCart(game) {
   const user = getUser();
   if (!user) {
@@ -103,22 +91,16 @@ export async function addToCart(game) {
   return true;
 }
 
-/** Remove a game from the cart. */
 export function removeFromCart(gameId) {
   cart = cart.filter((id) => id !== gameId);
   persistCart();
 }
 
-/** Clear the cart entirely. */
 export function clearCart() {
   cart = [];
   persistCart();
 }
 
-/**
- * Resolve the cart's gameIds into full game docs (visible + not yet unlocked).
- * Games that no longer exist are dropped silently.
- */
 export async function getCartItems() {
   const out = [];
   for (const id of cart) {
@@ -128,7 +110,6 @@ export async function getCartItems() {
   return out;
 }
 
-/** Navigate to the cart page (used by "Buy now" from a game). */
 export function goToCheckout() {
   location.hash = "#/cart";
 }
@@ -137,16 +118,11 @@ export function goToCheckout() {
    Coupon state
    ========================================================================== */
 
-/** @type {{code:string, percent:number, mode:"once"|"open"} | null} */
 let appliedCoupon = null;
 
 export function getAppliedCoupon() { return appliedCoupon; }
 export function clearAppliedCoupon() { appliedCoupon = null; }
 
-/**
- * Validate a coupon for the current user. Returns the coupon info or null.
- * Rules: exists, active, not expired, and (for mode="once") not already used.
- */
 export async function validateCoupon(rawCode) {
   const user = getUser();
   if (!user) return { ok: false, code: "notSignedIn" };
@@ -194,9 +170,6 @@ export async function validateCoupon(rawCode) {
    Cart page
    ========================================================================== */
 
-/**
- * Render the cart page into container.
- */
 export async function renderCart(container) {
   container.appendChild(skeletonLines(4));
 
@@ -216,7 +189,6 @@ export async function renderCart(container) {
     return;
   }
 
-  // Items list
   const list = el("div", { className: "stack", style: { marginBottom: "16px" } });
   for (const g of items) {
     list.appendChild(buildCartLine(g, () => {
@@ -226,12 +198,10 @@ export async function renderCart(container) {
   }
   container.appendChild(list);
 
-  // Totals + coupon
   const subtotal = items.reduce((s, g) => s + effectivePrice(g), 0);
 
   const totals = el("div", { className: "glass glass--pad stack", style: { marginBottom: "16px" } });
 
-  // Coupon row
   const couponRow = el("div", { className: "row", style: { gap: "8px" } });
   const couponInput = el("input", {
     className: "input grow code-input",
@@ -288,7 +258,6 @@ export async function renderCart(container) {
 
   container.appendChild(totals);
 
-  // Checkout form
   const user = getUser();
   const profile = getProfile();
   const form = el("div", { className: "glass glass--pad stack" });
@@ -317,17 +286,320 @@ export async function renderCart(container) {
     return;
   }
 
-  // Name (prefilled)
   const nameField = el("div", { className: "field" });
   nameField.appendChild(el("label", { className: "field__label", textContent: t("cart.customerName") }));
   const nameInput = el("input", { className: "input", maxLength: 60, value: profile?.name || "" });
   nameField.appendChild(nameInput);
   form.appendChild(nameField);
 
-  // Phone (optional)
   const phoneField = el("div", { className: "field" });
   phoneField.appendChild(el("label", { className: "field__label", textContent: t("cart.phone") }));
   const phoneInput = el("input", { className: "input", type: "tel", inputMode: "tel", maxLength: 20, placeholder: t("cart.phoneHint") });
+  phoneField.appendChild(phoneInput);
+  form.appendChild(phoneField);
+
+  const noteField = el("div", { className: "field" });
+  noteField.appendChild(el("label", { className: "field__label", textContent: t("cart.note") }));
+  const noteInput = el("textarea", { className: "textarea", maxLength: 300 });
+  noteField.appendChild(noteInput);
+  form.appendChild(noteField);
+
+  const buyBtn = el("button", {
+    className: "btn btn--primary btn--block btn--lg",
+    type: "button",
+    textContent: t("cart.buy")
+  });
+  buyBtn.addEventListener("click", async () => {
+    const customerName = nameInput.value.trim();
+    if (!customerName) { toastError(t("cart.errors.nameRequired")); return; }
+    buyBtn.disabled = true;
+    try {
+      const orderId = await placeOrder({
+        items,
+        subtotal,
+        total,
+        discountPercent,
+        coupon: appliedCoupon,
+        customerName,
+        phone: phoneInput.value.trim().slice(0, 20),
+        note: noteInput.value.trim().slice(0, 300)
+      });
+      clearCart();
+      clearAppliedCoupon();
+      location.hash = `#/processing/${orderId}`;
+    } catch (e) {
+      console.error("placeOrder failed:", e);
+      toastError(t("cart.errors.orderFailed"));
+    } finally {
+      buyBtn.disabled = false;
+    }
+  });
+  form.appendChild(buyBtn);
+
+  container.appendChild(form);
+}
+
+function sumRow(label, value, emphasize = false) {
+  const row = el("div", { className: "row row--between" });
+  row.appendChild(el("span", { className: emphasize ? "text-bold" : "text-muted", textContent: label }));
+  row.appendChild(el("span", { className: emphasize ? "text-bold" : "", textContent: value }));
+  return row;
+}
+
+function buildCartLine(game, onRemove) {
+  const line = el("div", { className: "line" });
+
+  const thumb = el("div", { className: "line__thumb" });
+  if (game.coverUrl) {
+    const img = el("img", { src: cloudinaryThumb(game.coverUrl, 200), alt: "", loading: "lazy" });
+    img.addEventListener("error", () => img.remove());
+    thumb.appendChild(img);
+  }
+  line.appendChild(thumb);
+
+  const body = el("div", { className: "line__body" });
+  body.appendChild(el("div", { className: "line__title", textContent: pickLocalized(game.title_ar, game.title_en) || "—" }));
+  body.appendChild(el("div", { className: "line__sub", textContent: formatPrice(effectivePrice(game)) }));
+  line.appendChild(body);
+
+  const removeBtn = el("button", {
+    className: "btn btn--ghost btn--icon",
+    type: "button",
+    "aria-label": t("cart.remove"),
+    onClick: onRemove
+  }, icon("trash", 18));
+  line.appendChild(removeBtn);
+
+  return line;
+}
+
+/* ============================================================================
+   Place order
+   ========================================================================== */
+
+async function placeOrder({ items, subtotal, total, discountPercent, coupon, customerName, phone, note }) {
+  const user = getUser();
+  if (!user) throw new Error("not-signed-in");
+
+  const orderRef = doc(collection(db, "orders"));
+  const orderId = orderRef.id;
+
+  const itemData = items.map((g) => ({
+    gameId: g.id,
+    title: pickLocalized(g.title_ar, g.title_en) || g.id,
+    price: effectivePrice(g)
+  }));
+
+  const orderPayload = {
+    uid: user.uid,
+    email: user.email || "",
+    customerName,
+    phone: phone || "",
+    note: note || "",
+    items: itemData,
+    itemIds: items.map((g) => g.id),
+    subtotal: Math.round(subtotal * 100) / 100,
+    couponCode: coupon?.code || "",
+    discountPercent: coupon?.percent || 0,
+    total: Math.round(total * 100) / 100,
+    status: "pending",
+    rejectReason: "",
+    rejectionSeen: false,
+    createdAt: serverTimestamp(),
+    paidAt: null
+  };
+
+  const batch = writeBatch(db);
+  batch.set(orderRef, orderPayload);
+
+  if (coupon && coupon.mode === "once") {
+    const useRef = doc(db, "couponUses", `${coupon.code}_${user.uid}`);
+    batch.set(useRef, {
+      uid: user.uid,
+      code: coupon.code,
+      createdAt: serverTimestamp()
+    });
+  }
+
+  await batch.commit();
+  return orderId;
+}
+
+/* ============================================================================
+   Processing screen
+   ========================================================================== */
+
+export function renderProcessing(container, orderId) {
+  const header = el("div", { className: "page-header" });
+  header.appendChild(el("h1", { className: "page-header__title", textContent: t("cart.processing") }));
+  container.appendChild(header);
+
+  const card = el("div", { className: "glass glass--pad-lg stack" });
+
+  const shortId = String(orderId || "").slice(0, 8).toUpperCase();
+  const idRow = el("div", { className: "row row--between" });
+  idRow.appendChild(el("span", { className: "text-muted", textContent: t("cart.orderNumber") }));
+  idRow.appendChild(el("span", { className: "text-bold", textContent: shortId }));
+  card.appendChild(idRow);
+
+  const statusRow = el("div", { className: "row", style: { gap: "8px", marginTop: "8px" } });
+  const statusPill = el("span", { className: "pill pill--warning", textContent: t("orders.status.pending") });
+  statusRow.appendChild(statusPill);
+  card.appendChild(statusRow);
+
+  card.appendChild(el("p", { className: "text-subtle text-sm", style: { marginTop: "12px" }, textContent: t("cart.processingHint") }));
+
+  container.appendChild(card);
+
+  const unsub = onSnapshot(doc(db, "orders", orderId), (snap) => {
+    if (!snap.exists()) return;
+    const o = snap.data() || {};
+    if (o.status === "paid") {
+      statusPill.textContent = t("orders.status.paid");
+      statusPill.className = "pill pill--success";
+      setTimeout(() => { location.hash = "#/paid"; }, 800);
+    } else if (o.status === "rejected") {
+      statusPill.textContent = t("orders.status.rejected");
+      statusPill.className = "pill pill--danger";
+    } else {
+      statusPill.textContent = t("orders.status.pending");
+      statusPill.className = "pill pill--warning";
+    }
+  }, (err) => {
+    console.error("order snapshot error:", err);
+  });
+
+  const mo = new MutationObserver(() => {
+    if (!document.body.contains(container)) {
+      try { unsub(); } catch (_) {}
+      mo.disconnect();
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  return () => { try { unsub(); } catch (_) {} mo.disconnect(); };
+}
+
+/* ============================================================================
+   Orders page
+   ========================================================================== */
+
+export function renderOrders(container) {
+  const user = getUser();
+  const header = el("div", { className: "page-header" });
+  header.appendChild(el("h1", { className: "page-header__title", textContent: t("orders.title") }));
+  container.appendChild(header);
+
+  if (!user) {
+    container.appendChild(emptyState({
+      iconName: "user",
+      title: t("cart.requiresLogin"),
+      action: { label: t("nav.login"), onClick: () => { location.hash = "#/login"; } }
+    }));
+    return () => {};
+  }
+
+  const list = el("div", { className: "stack" });
+  container.appendChild(list);
+
+  const q = query(collection(db, "orders"), where("uid", "==", user.uid));
+  const unsub = onSnapshot(q, (snap) => {
+    const orders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    list.innerHTML = "";
+    if (!orders.length) {
+      list.appendChild(emptyState({
+        iconName: "cart",
+        title: t("orders.empty")
+      }));
+      return;
+    }
+    for (const o of orders) list.appendChild(buildOrderCard(o));
+  }, (err) => {
+    console.error("orders snapshot error:", err);
+    list.innerHTML = "";
+    list.appendChild(emptyState({
+      iconName: "info",
+      title: t("error.network")
+    }));
+  });
+
+  return () => { try { unsub(); } catch (_) {} };
+}
+
+function buildOrderCard(o) {
+  const card = el("div", { className: "glass glass--pad stack" });
+
+  const head = el("div", { className: "row row--between" });
+  head.appendChild(el("span", { className: "text-bold", textContent: `#${o.id.slice(0, 8).toUpperCase()}` }));
+
+  let pillClass = "pill--warning";
+  let pillLabel = t("orders.status.pending");
+  if (o.status === "paid") { pillClass = "pill--success"; pillLabel = t("orders.status.paid"); }
+  if (o.status === "rejected") { pillClass = "pill--danger"; pillLabel = t("orders.status.rejected"); }
+  head.appendChild(el("span", { className: `pill ${pillClass}`, textContent: pillLabel }));
+  card.appendChild(head);
+
+  card.appendChild(el("div", { className: "text-xs text-muted", textContent: formatDate(o.createdAt) }));
+
+  const itemsList = el("div", { className: "stack stack--sm", style: { marginTop: "8px" } });
+  for (const it of (o.items || [])) {
+    const r = el("div", { className: "row row--between" });
+    r.appendChild(el("span", { className: "text-sm", textContent: it.title }));
+    r.appendChild(el("span", { className: "text-sm text-muted", textContent: formatPrice(it.price) }));
+    itemsList.appendChild(r);
+  }
+  card.appendChild(itemsList);
+
+  const totals = el("div", { className: "stack stack--sm", style: { marginTop: "8px" } });
+  totals.appendChild(sumRow(t("cart.subtotal"), formatPrice(o.subtotal)));
+  if (o.discountPercent) {
+    const dv = Math.round((o.subtotal * o.discountPercent) / 100 * 100) / 100;
+    totals.appendChild(sumRow(`${t("cart.discount")} (${o.discountPercent}%)`, `- ${formatPrice(dv)}`));
+  }
+  totals.appendChild(sumRow(t("cart.total"), formatPrice(o.total), true));
+  card.appendChild(totals);
+
+  if (o.status === "rejected" && o.rejectReason) {
+    const box = el("div", { className: "glass glass--pad", style: { marginTop: "8px", borderColor: "rgba(242,107,107,0.4)" } });
+    box.appendChild(el("div", { className: "text-xs text-danger text-bold", textContent: t("orders.reason") }));
+    box.appendChild(el("div", { className: "text-sm", style: { marginTop: "4px", whiteSpace: "pre-line" }, textContent: o.rejectReason }));
+    card.appendChild(box);
+  }
+
+  if (o.status === "paid") {
+    card.appendChild(el("button", {
+      className: "btn btn--primary btn--block",
+      type: "button",
+      textContent: t("orders.goToPaid"),
+      style: { marginTop: "8px" },
+      onClick: () => { location.hash = "#/paid"; }
+    }));
+  }
+
+  return card;
+}
+
+/* ============================================================================
+   Rejection popup
+   ========================================================================== */
+
+export async function checkRejectedOrders() {
+  const user = getUser();
+  if (!user) return;
+
+  try {
+    const q = query(collection(db, "orders"), where("uid", "==", user.uid));
+    const snap = await getDocs(q);
+    const rejected = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((o) => o.status === "rejected" && !o.rejectionSeen)
+      .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+
+    if (!rejected.length) return;
+
+    const order = rejected[0];
+    const shortId = order.id.sli 20, placeholder: t("cart.phoneHint") });
   phoneField.appendChild(phoneInput);
   form.appendChild(phoneField);
 
