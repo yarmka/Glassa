@@ -38,10 +38,7 @@ import { t } from "./i18n.js";
    State
    ========================================================================== */
 
-/** @type {import("firebase/auth").User|null} */
 let currentUser = null;
-
-/** @type {{name?:string,email?:string,emailVerified?:boolean,favorites?:string[],dismissedPopups?:string[]}|null} */
 let currentProfile = null;
 
 const listeners = new Set();
@@ -49,15 +46,10 @@ const listeners = new Set();
 export function getUser() { return currentUser; }
 export function getProfile() { return currentProfile; }
 
-/** True if the current user is the owner (email match). */
 export function isOwner() {
   return isOwnerEmail(currentUser?.email);
 }
 
-/**
- * Subscribe to auth changes. Called immediately with the current state.
- * fn({ user, profile, isOwner })
- */
 export function onAuth(fn) {
   listeners.add(fn);
   fn({ user: currentUser, profile: currentProfile, isOwner: isOwner() });
@@ -95,7 +87,6 @@ onAuthStateChanged(auth, async (user) => {
   currentUser = user;
   currentProfile = user ? await loadProfile(user.uid) : null;
 
-  // Keep the owner's profile name in sync with CONFIG.ownerName.
   if (user && isOwnerEmail(user.email) && currentProfile) {
     if (currentProfile.name !== CONFIG.ownerName) {
       try {
@@ -114,16 +105,10 @@ onAuthStateChanged(auth, async (user) => {
    Sign up / Sign in / Sign out
    ========================================================================== */
 
-/**
- * Sign up a new account and create the users/{uid} document.
- * The owner email always uses CONFIG.ownerName as the display name.
- * @returns {Promise<{ok:true, user:any} | {ok:false, code:string}>}
- */
 export async function signup({ name, email, password }) {
   const cleanName = String(name || "").trim();
   const cleanEmail = String(email || "").trim().toLowerCase();
 
-  // Force the owner name for the owner email.
   const effectiveName = isOwnerEmail(cleanEmail) ? CONFIG.ownerName : cleanName;
 
   if (!effectiveName) return { ok: false, code: "nameRequired" };
@@ -152,9 +137,6 @@ export async function signup({ name, email, password }) {
   }
 }
 
-/**
- * Sign in an existing account.
- */
 export async function login({ email, password }) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   if (!cleanEmail) return { ok: false, code: "invalidEmail" };
@@ -190,9 +172,6 @@ export async function sendPasswordReset(email) {
   }
 }
 
-/**
- * Mark the current user's profile as verified.
- */
 export async function markEmailVerified() {
   if (!currentUser) return { ok: false, code: "notSignedIn" };
   try {
@@ -206,20 +185,16 @@ export async function markEmailVerified() {
   }
 }
 
-/**
- * True when the current user can buy.
- * NOTE: the owner is NOT auto-verified — they must confirm the code too.
- */
 export function isVerified() {
   return Boolean(currentProfile?.emailVerified);
 }
 
 /* ============================================================================
-   6-digit email verification (client-side OTP, sessionStorage-backed)
+   6-digit email verification
    ========================================================================== */
 
 const OTP_KEY = "glassa.otp";
-const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 
 function readOtp() {
@@ -242,16 +217,10 @@ function clearOtp() {
   try { sessionStorage.removeItem(OTP_KEY); } catch (_) {}
 }
 
-/**
- * Generate a fresh 6-digit code, store it, and email it via EmailJS.
- * Sends multiple param aliases so it works with a wide range of templates.
- * @returns {Promise<{ok:boolean, code?:string, cooldownMs?:number, detail?:string}>}
- */
 export async function sendVerificationCode({ email }) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   if (!cleanEmail) return { ok: false, code: "invalidEmail", cooldownMs: 0 };
 
-  // 60s resend cooldown
   const existing = readOtp();
   if (existing && existing.email === cleanEmail) {
     const elapsed = Date.now() - (existing.lastSentAt || 0);
@@ -274,26 +243,20 @@ export async function sendVerificationCode({ email }) {
   };
   writeOtp(record);
 
-  // Human-readable short time for the email body.
   const time = formatTime(new Date(expiresAt));
 
-  // Send with multiple common variable names to maximize template compatibility.
   const result = await sendEmailViaEmailJS(CONFIG.emailjs.verifyTemplateId, {
-    // Recipient (common names)
     to_email: cleanEmail,
     email: cleanEmail,
     user_email: cleanEmail,
     recipient: cleanEmail,
-    // Code (common names)
     passcode: code,
     code: code,
     verification_code: code,
     otp: code,
-    // Expiry
     time,
     expiry: time,
     expires_at: time,
-    // Extras
     site_url: CONFIG.siteUrl,
     site_name: "Glassa"
   });
@@ -306,9 +269,6 @@ export async function sendVerificationCode({ email }) {
   return { ok: true, cooldownMs: 60_000, expiresAt };
 }
 
-/**
- * Verify an OTP code. On success, marks the profile as verified.
- */
 export async function verifyCode({ code }) {
   if (!currentUser) return { ok: false, code: "notSignedIn" };
 
@@ -332,6 +292,99 @@ export async function verifyCode({ code }) {
 
   if (normalized !== rec.code) {
     rec.attempts = (rec.attempts || 0) + 1;
+    if (rec.attempts >= OTP_MAX_ATTEMPTS) {
+      clearOtp();
+      return { ok: false, code: "tooMany" };
+    }
+    writeOtp(rec);
+    return { ok: false, code: "wrong" };
+  }
+
+  clearOtp();
+  const marked = await markEmailVerified();
+  if (!marked.ok) return { ok: false, code: "generic" };
+  return { ok: true };
+}
+
+export function getResendCooldownMs() {
+  const rec = readOtp();
+  if (!rec) return 0;
+  const elapsed = Date.now() - (rec.lastSentAt || 0);
+  return Math.max(0, 60_000 - elapsed);
+}
+
+export function getCodeTimeLeftMs() {
+  const rec = readOtp();
+  if (!rec) return 0;
+  return Math.max(0, rec.expiresAt - Date.now());
+}
+
+/* ============================================================================
+   EmailJS helper
+   ========================================================================== */
+
+export async function sendEmailViaEmailJS(templateId, templateParams) {
+  try {
+    const body = {
+      service_id: CONFIG.emailjs.serviceId,
+      template_id: templateId,
+      user_id: CONFIG.emailjs.publicKey,
+      template_params: templateParams || {}
+    };
+    const res = await fetch("https://api.emailjs.com/api/v1/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      console.error("EmailJS error:", res.status, res.statusText, text);
+      return { ok: false, detail: `${res.status} ${res.statusText} — ${text}` };
+    }
+    return { ok: true, detail: text };
+  } catch (e) {
+    console.error("EmailJS network error:", e);
+    return { ok: false, detail: String(e) };
+  }
+}
+
+/* ============================================================================
+   Firebase error → friendly message
+   ========================================================================== */
+
+export function authErrorMessage(code) {
+  switch (code) {
+    case "auth/invalid-email":
+    case "invalidEmail":
+      return t("auth.errors.invalidEmail");
+    case "auth/weak-password":
+    case "weakPassword":
+      return t("auth.errors.weakPassword");
+    case "auth/email-already-in-use":
+    case "emailInUse":
+      return t("auth.errors.emailInUse");
+    case "auth/user-not-found":
+    case "userNotFound":
+      return t("auth.errors.userNotFound");
+    case "auth/wrong-password":
+    case "wrongPassword":
+      return t("auth.errors.wrongPassword");
+    case "auth/too-many-requests":
+    case "tooMany":
+      return t("auth.errors.tooMany");
+    case "auth/invalid-credential":
+    case "auth/invalid-login-credentials":
+    case "invalidCredential":
+      return t("auth.errors.invalidCredential");
+    case "nameRequired":
+      return t("auth.errors.nameRequired");
+    case "nameTooLong":
+      return t("auth.errors.nameRequired");
+    default:
+      return t("auth.errors.generic");
+  }
+}empts = (rec.attempts || 0) + 1;
     if (rec.attempts >= OTP_MAX_ATTEMPTS) {
       clearOtp();
       return { ok: false, code: "tooMany" };
