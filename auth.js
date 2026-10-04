@@ -2,12 +2,6 @@
  * ============================================================================
  *  Glassa — Authentication
  * ============================================================================
- *  - Sign up (email + password + name)
- *  - 6-digit email verification via EmailJS (no Firebase email link)
- *  - Owner email is verified like any other account (no bypass)
- *  - Owner's display name is kept in sync with CONFIG.ownerName
- *  - Login, logout, password reset
- * ============================================================================
  */
 
 import {
@@ -26,17 +20,8 @@ import {
   serverTimestamp
 } from "./firebase.js";
 import { CONFIG, isOwnerEmail } from "./config.js";
-import {
-  toastSuccess,
-  toastError,
-  formatTime,
-  randomDigits
-} from "./ui.js";
+import { toastSuccess, toastError, formatTime, randomDigits } from "./ui.js";
 import { t } from "./i18n.js";
-
-/* ============================================================================
-   State
-   ========================================================================== */
 
 let currentUser = null;
 let currentProfile = null;
@@ -63,10 +48,6 @@ function emit() {
   }
 }
 
-/* ============================================================================
-   Profile document
-   ========================================================================== */
-
 async function loadProfile(uid) {
   try {
     const ref = doc(db, "users", uid);
@@ -78,10 +59,6 @@ async function loadProfile(uid) {
     return null;
   }
 }
-
-/* ============================================================================
-   Auth state observer
-   ========================================================================== */
 
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
@@ -100,10 +77,6 @@ onAuthStateChanged(auth, async (user) => {
 
   emit();
 });
-
-/* ============================================================================
-   Sign up / Sign in / Sign out
-   ========================================================================== */
 
 export async function signup({ name, email, password }) {
   const cleanName = String(name || "").trim();
@@ -188,10 +161,6 @@ export async function markEmailVerified() {
 export function isVerified() {
   return Boolean(currentProfile?.emailVerified);
 }
-
-/* ============================================================================
-   6-digit email verification
-   ========================================================================== */
 
 const OTP_KEY = "glassa.otp";
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -319,10 +288,6 @@ export function getCodeTimeLeftMs() {
   return Math.max(0, rec.expiresAt - Date.now());
 }
 
-/* ============================================================================
-   EmailJS helper
-   ========================================================================== */
-
 export async function sendEmailViaEmailJS(templateId, templateParams) {
   try {
     const body = {
@@ -340,7 +305,47 @@ export async function sendEmailViaEmailJS(templateId, templateParams) {
     const text = await res.text().catch(() => "");
     if (!res.ok) {
       console.error("EmailJS error:", res.status, res.statusText, text);
-      return { ok: false, detail: `${res.status} ${res.statusText} — ${text}` };
+      return { ok: false, detail: res.status + " " + res.statusText + " — " + text };
+    }
+    return { ok: true, detail: text };
+  } catch (e) {
+    console.error("EmailJS network error:", e);
+    return { ok: false, detail: String(e) };
+  }
+}
+
+export function authErrorMessage(code) {
+  switch (code) {
+    case "auth/invalid-email":
+    case "invalidEmail":
+      return t("auth.errors.invalidEmail");
+    case "auth/weak-password":
+    case "weakPassword":
+      return t("auth.errors.weakPassword");
+    case "auth/email-already-in-use":
+    case "emailInUse":
+      return t("auth.errors.emailInUse");
+    case "auth/user-not-found":
+    case "userNotFound":
+      return t("auth.errors.userNotFound");
+    case "auth/wrong-password":
+    case "wrongPassword":
+      return t("auth.errors.wrongPassword");
+    case "auth/too-many-requests":
+    case "tooMany":
+      return t("auth.errors.tooMany");
+    case "auth/invalid-credential":
+    case "auth/invalid-login-credentials":
+    case "invalidCredential":
+      return t("auth.errors.invalidCredential");
+    case "nameRequired":
+      return t("auth.errors.nameRequired");
+    case "nameTooLong":
+      return t("auth.errors.nameRequired");
+    default:
+      return t("auth.errors.generic");
+  }
+    }es.status} ${res.statusText} — ${text}` };
     }
     return { ok: true, detail: text };
   } catch (e) {
