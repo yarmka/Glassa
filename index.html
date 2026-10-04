@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Glassa</title>
+<title>Glassa - فحص الاتصال</title>
 <style>
   body {
     margin: 0;
@@ -14,22 +14,119 @@
     font-family: system-ui, sans-serif;
     background: linear-gradient(135deg, #6a8dff, #b46bff);
     color: #fff;
+    padding: 16px;
+    box-sizing: border-box;
   }
   .card {
-    padding: 32px 40px;
+    width: 100%;
+    max-width: 420px;
+    padding: 24px;
     border-radius: 24px;
     background: rgba(255, 255, 255, 0.18);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.35);
-    text-align: center;
+  }
+  h1 { margin: 0 0 16px; text-align: center; }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    margin-bottom: 10px;
+    border-radius: 12px;
+    border: none;
+    font-size: 16px;
+    direction: ltr;
+  }
+  button {
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 10px;
+    border: none;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    font-size: 16px;
+    font-weight: bold;
+  }
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 12px;
+    border-radius: 12px;
+    font-size: 14px;
+    min-height: 60px;
   }
 </style>
 </head>
 <body>
   <div class="card">
     <h1>Glassa</h1>
-    <p>الموقع يشتغل ✅</p>
+    <input id="email" type="email" placeholder="إيميلك الحقيقي">
+    <input id="password" type="password" placeholder="كلمة مرور (6 أحرف أو أكثر)">
+    <button id="signup">1) تجربة تسجيل حساب</button>
+    <button id="db">2) تجربة قاعدة البيانات</button>
+    <pre id="log">النتائج تظهر هنا...</pre>
   </div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, createUserWithEmailAndPassword, sendEmailVerification } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDNp7eIv6mRXUHA76wyz3ozC9L1MG4RCFA",
+    authDomain: "cybertfhem.firebaseapp.com",
+    projectId: "cybertfhem",
+    storageBucket: "cybertfhem.firebasestorage.app",
+    messagingSenderId: "287774208226",
+    appId: "1:287774208226:web:081be7dfb45eb139d72ebb"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const log = document.getElementById("log");
+
+  document.getElementById("signup").addEventListener("click", async () => {
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    log.textContent = "جاري التجربة...";
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await sendEmailVerification(cred.user);
+      log.textContent = "✅ تم إنشاء الحساب وإرسال إيميل التأكيد. شيّك على إيميلك (وتحقق من الرسائل غير المرغوبة).";
+    } catch (e) {
+      if (e.code === "auth/email-already-in-use") {
+        log.textContent = "✅ الاتصال شغال (الإيميل مسجل من قبل).";
+      } else if (e.code === "auth/operation-not-allowed") {
+        log.textContent = "❌ طريقة Email/Password غير مفعلة في Firebase.";
+      } else if (e.code === "auth/unauthorized-domain") {
+        log.textContent = "❌ الدومين غير مضاف في Authorized domains.";
+      } else if (e.code === "auth/weak-password") {
+        log.textContent = "⚠️ كلمة المرور ضعيفة، لازم 6 أحرف على الأقل.";
+      } else if (e.code === "auth/invalid-email") {
+        log.textContent = "⚠️ الإيميل غير صحيح.";
+      } else {
+        log.textContent = "❌ خطأ: " + e.code;
+      }
+    }
+  });
+
+  document.getElementById("db").addEventListener("click", async () => {
+    log.textContent = "جاري التجربة...";
+    try {
+      await getDocs(collection(db, "test"));
+      log.textContent = "✅ قاعدة البيانات متصلة.";
+    } catch (e) {
+      if (e.code === "permission-denied") {
+        log.textContent = "✅ قاعدة البيانات متصلة والقواعد مقفلة (هذا المطلوب الآن).";
+      } else {
+        log.textContent = "❌ خطأ: " + e.code;
+      }
+    }
+  });
+</script>
 </body>
 </html>
