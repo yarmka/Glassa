@@ -193,7 +193,7 @@ export async function sendVerificationCode({ email }) {
   const existing = readOtp();
   if (existing && existing.email === cleanEmail) {
     const elapsed = Date.now() - (existing.lastSentAt || 0);
-    const remaining = 60_000 - elapsed;
+    const remaining = 60000 - elapsed;
     if (remaining > 0) {
       return { ok: false, code: "cooldown", cooldownMs: remaining };
     }
@@ -204,9 +204,9 @@ export async function sendVerificationCode({ email }) {
   const expiresAt = now + OTP_TTL_MS;
 
   const record = {
-    code,
+    code: code,
     email: cleanEmail,
-    expiresAt,
+    expiresAt: expiresAt,
     attempts: 0,
     lastSentAt: now
   };
@@ -223,7 +223,7 @@ export async function sendVerificationCode({ email }) {
     code: code,
     verification_code: code,
     otp: code,
-    time,
+    time: time,
     expiry: time,
     expires_at: time,
     site_url: CONFIG.siteUrl,
@@ -235,7 +235,7 @@ export async function sendVerificationCode({ email }) {
     return { ok: false, code: "sendFailed", cooldownMs: 0, detail: result.detail };
   }
 
-  return { ok: true, cooldownMs: 60_000, expiresAt };
+  return { ok: true, cooldownMs: 60000, expiresAt: expiresAt };
 }
 
 export async function verifyCode({ code }) {
@@ -279,7 +279,7 @@ export function getResendCooldownMs() {
   const rec = readOtp();
   if (!rec) return 0;
   const elapsed = Date.now() - (rec.lastSentAt || 0);
-  return Math.max(0, 60_000 - elapsed);
+  return Math.max(0, 60000 - elapsed);
 }
 
 export function getCodeTimeLeftMs() {
@@ -305,7 +305,7 @@ export async function sendEmailViaEmailJS(templateId, templateParams) {
     const text = await res.text().catch(() => "");
     if (!res.ok) {
       console.error("EmailJS error:", res.status, res.statusText, text);
-      return { ok: false, detail: res.status + " " + res.statusText + " — " + text };
+      return { ok: false, detail: res.status + " " + res.statusText + " - " + text };
     }
     return { ok: true, detail: text };
   } catch (e) {
@@ -345,239 +345,4 @@ export function authErrorMessage(code) {
     default:
       return t("auth.errors.generic");
   }
-    }es.status} ${res.statusText} — ${text}` };
-    }
-    return { ok: true, detail: text };
-  } catch (e) {
-    console.error("EmailJS network error:", e);
-    return { ok: false, detail: String(e) };
-  }
-}
-
-/* ============================================================================
-   Firebase error → friendly message
-   ========================================================================== */
-
-export function authErrorMessage(code) {
-  switch (code) {
-    case "auth/invalid-email":
-    case "invalidEmail":
-      return t("auth.errors.invalidEmail");
-    case "auth/weak-password":
-    case "weakPassword":
-      return t("auth.errors.weakPassword");
-    case "auth/email-already-in-use":
-    case "emailInUse":
-      return t("auth.errors.emailInUse");
-    case "auth/user-not-found":
-    case "userNotFound":
-      return t("auth.errors.userNotFound");
-    case "auth/wrong-password":
-    case "wrongPassword":
-      return t("auth.errors.wrongPassword");
-    case "auth/too-many-requests":
-    case "tooMany":
-      return t("auth.errors.tooMany");
-    case "auth/invalid-credential":
-    case "auth/invalid-login-credentials":
-    case "invalidCredential":
-      return t("auth.errors.invalidCredential");
-    case "nameRequired":
-      return t("auth.errors.nameRequired");
-    case "nameTooLong":
-      return t("auth.errors.nameRequired");
-    default:
-      return t("auth.errors.generic");
-  }
-}empts = (rec.attempts || 0) + 1;
-    if (rec.attempts >= OTP_MAX_ATTEMPTS) {
-      clearOtp();
-      return { ok: false, code: "tooMany" };
-    }
-    writeOtp(rec);
-    return { ok: false, code: "wrong" };
-  }
-
-  clearOtp();
-  const marked = await markEmailVerified();
-  if (!marked.ok) return { ok: false, code: "generic" };
-  return { ok: true };
-}
-
-export function getResendCooldownMs() {
-  const rec = readOtp();
-  if (!rec) return 0;
-  const elapsed = Date.now() - (rec.lastSentAt || 0);
-  return Math.max(0, 60_000 - elapsed);
-}
-
-export function getCodeTimeLeftMs() {
-  const rec = readOtp();
-  if (!rec) return 0;
-  return Math.max(0, rec.expiresAt - Date.now());
-}
-
-/* ============================================================================
-   EmailJS helper (REST API, no SDK)
-   ========================================================================== */
-
-/**
- * Post a message to EmailJS.
- * @returns {Promise<{ok:boolean, detail?:string}>}
- */
-export async function sendEmailViaEmailJS(templateId, templateParams) {
-  try {
-    const body = {
-      service_id: CONFIG.emailjs.serviceId,
-      template_id: templateId,
-      user_id: CONFIG.emailjs.publicKey,
-      template_params: templateParams || {}
-    };
-    const res = await fetch("https://api.emailjs.com/api/v1/email/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-
-    const text = await res.text().catch(() => "");
-    if (!res.ok) {
-      // Detailed log so you can diagnose from Chrome DevTools (remote inspect).
-      console.error("EmailJS error:", res.status, res.statusText, text);
-      return { ok: false, detail: `${res.status} ${res.statusText} — ${text}` };
-    }
-    return { ok: true, detail: text };
-  } catch (e) {
-    console.error("EmailJS network error:", e);
-    return { ok: false, detail: String(e) };
-  }
-}
-
-/* ============================================================================
-   Map Firebase error codes → friendly i18n keys
-   ========================================================================== */
-
-export function authErrorMessage(code) {
-  switch (code) {
-    case "auth/invalid-email":
-    case "invalidEmail":
-      return t("auth.errors.invalidEmail");
-    case "auth/weak-password":
-    case "weakPassword":
-      return t("auth.errors.weakPassword");
-    case "auth/email-already-in-use":
-    case "emailInUse":
-      return t("auth.errors.emailInUse");
-    case "auth/user-not-found":
-    case "userNotFound":
-      return t("auth.errors.userNotFound");
-    case "auth/wrong-password":
-    case "wrongPassword":
-      return t("auth.errors.wrongPassword");
-    case "auth/too-many-requests":
-    case "tooMany":
-      return t("auth.errors.tooMany");
-    case "auth/invalid-credential":
-    case "auth/invalid-login-credentials":
-    case "invalidCredential":
-      return t("auth.errors.invalidCredential");
-    case "nameRequired":
-      return t("auth.errors.nameRequired");
-    case "nameTooLong":
-      return t("auth.errors.nameRequired");
-    default:
-      return t("auth.errors.generic");
-  }
-                    } {
-  const rec = readOtp();
-  if (!rec) return 0;
-  const elapsed = Date.now() - (rec.lastSentAt || 0);
-  return Math.max(0, 60_000 - elapsed);
-}
-
-/** Remaining time on the current code (ms), or 0 if expired/missing. */
-export function getCodeTimeLeftMs() {
-  const rec = readOtp();
-  if (!rec) return 0;
-  return Math.max(0, rec.expiresAt - Date.now());
-}
-
-/* ============================================================================
-   EmailJS helper (REST API, no SDK)
-   ========================================================================== */
-
-/**
- * Post a message to EmailJS.
- * @returns {Promise<boolean>} true on 2xx.
- */
-export async function sendEmailViaEmailJS(templateId, templateParams) {
-  try {
-    const body = {
-      service_id: CONFIG.emailjs.serviceId,
-      template_id: templateId,
-      user_id: CONFIG.emailjs.publicKey,
-      template_params: templateParams || {}
-    };
-    const res = await fetch("https://api.emailjs.com/api/v1/email/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error("EmailJS error:", res.status, text);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error("EmailJS network error:", e);
-    return false;
-  }
-}
-
-/* ============================================================================
-   Map Firebase error codes → friendly i18n keys
-   ========================================================================== */
-
-/**
- * Translate a Firebase auth error code into a friendly message.
- * @param {string} code
- * @returns {string}
- */
-export function authErrorMessage(code) {
-  switch (code) {
-    case "auth/invalid-email":
-    case "invalidEmail":
-      return t("auth.errors.invalidEmail");
-    case "auth/weak-password":
-    case "weakPassword":
-      return t("auth.errors.weakPassword");
-    case "auth/email-already-in-use":
-    case "emailInUse":
-      return t("auth.errors.emailInUse");
-    case "auth/user-not-found":
-    case "userNotFound":
-      return t("auth.errors.userNotFound");
-    case "auth/wrong-password":
-    case "wrongPassword":
-      return t("auth.errors.wrongPassword");
-    case "auth/too-many-requests":
-    case "tooMany":
-      return t("auth.errors.tooMany");
-    case "auth/invalid-credential":
-    case "auth/invalid-login-credentials":
-    case "invalidCredential":
-      return t("auth.errors.invalidCredential");
-    case "nameRequired":
-      return t("auth.errors.nameRequired");
-    case "nameTooLong":
-      return t("auth.errors.nameRequired");
-    default:
-      return t("auth.errors.generic");
-  }
-}
-
-/* ============================================================================
-   Unused-export guard (keeps tree-shakers happy in some bundlers)
-   ========================================================================== */
-
-export const __secureRandomInt = secureRandomInt;
+               }
