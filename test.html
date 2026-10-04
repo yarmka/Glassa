@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glassa — Diagnostics</title>
+<style>
+  body{font-family:monospace;padding:16px;background:#f6f7fb;color:#111;font-size:14px}
+  h1{font-size:20px;margin-bottom:16px}
+  h2{font-size:16px;margin:20px 0 8px}
+  .item{padding:10px 12px;margin:6px 0;border-radius:8px;background:#fff;border:1px solid #eee}
+  .ok{background:#d4f4dd;color:#0a5c2c;border-color:#a3dcb4}
+  .fail{background:#ffd4d4;color:#900;border-color:#f5a3a3}
+  pre{background:#111;color:#0f0;padding:12px;border-radius:8px;
+      font-size:11px;overflow:auto;max-height:240px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+  <h1>🔍 Glassa Diagnostics</h1>
+  <p>افتح هذا الرابط من نفس جهازك: <code id="base"></code></p>
+
+  <h2>1) اختبار تحميل الملفات</h2>
+  <div id="files"></div>
+
+  <h2>2) اختبار استيراد الوحدات (Modules)</h2>
+  <div id="modules"></div>
+
+  <h2>3) سجل الأخطاء</h2>
+  <pre id="log">بدء التشخيص…</pre>
+
+<script>
+  document.getElementById('base').textContent = location.origin + location.pathname.replace('test.html','');
+
+  const log = (m) => {
+    const el = document.getElementById('log');
+    el.textContent += '\n' + m;
+  };
+
+  const FILES = [
+    'index.html','styles.css','config.js','i18n.js','firebase.js',
+    'ui.js','auth.js','catalog.js','cart.js','admin.js','app.js'
+  ];
+
+  const MODULES = ['i18n','config','firebase','ui','auth','catalog','cart','admin'];
+
+  async function testFiles() {
+    const box = document.getElementById('files');
+    for (const f of FILES) {
+      const url = new URL(f, location.href).href;
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.textContent = '⏳ ' + f;
+      box.appendChild(div);
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (res.ok) {
+          const txt = await res.text();
+          div.className = 'item ok';
+          div.textContent = '✅ ' + f + ' — HTTP ' + res.status + ' (' + txt.length + ' بايت)';
+        } else {
+          div.className = 'item fail';
+          div.textContent = '❌ ' + f + ' — HTTP ' + res.status + ' (غير موجود)';
+        }
+      } catch (e) {
+        div.className = 'item fail';
+        div.textContent = '❌ ' + f + ' — ' + e.message;
+      }
+    }
+  }
+
+  async function testModules() {
+    const box = document.getElementById('modules');
+    for (const m of MODULES) {
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.textContent = '⏳ ' + m + '.js';
+      box.appendChild(div);
+      try {
+        await import('./' + m + '.js');
+        div.className = 'item ok';
+        div.textContent = '✅ ' + m + '.js — يعمل';
+      } catch (e) {
+        div.className = 'item fail';
+        div.textContent = '❌ ' + m + '.js — ' + (e.message || e);
+        log('❌ ' + m + '.js:\n' + (e.stack || e.message || e));
+      }
+    }
+  }
+
+  (async function run() {
+    await testFiles();
+    await testModules();
+    log('\n✅ انتهى الاختبار.');
+  })();
+
+  window.addEventListener('error', e => log('⚠️ window.error: ' + e.message));
+  window.addEventListener('unhandledrejection', e => log('⚠️ promise: ' + (e.reason?.message || e.reason)));
+</script>
+</body>
+</html>
