@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="refresh" content="0; url=./#" />
+    <title>Redirecting…</title>
+    <script>
+      (function () {
+        const repoPrefix = "/glassa";
+        const normalizedPath = location.pathname.replace(/\/+$/, "") || "/";
+        const repoPath = normalizedPath.startsWith(repoPrefix) ? repoPrefix : "";
+        const route = repoPath
+          ? normalizedPath.slice(repoPrefix.length) || "/"
+          : normalizedPath;
+        const hashTarget = route && route !== "/" ? `#${route}` : "#/";
+        const finalUrl = `${location.origin}${repoPath || "/"}${hashTarget}${location.search || ""}`;
+        location.replace(finalUrl);
+      })();
+    </script>
+  </head>
+  <body>
+    <p>Redirecting…</p>
+  </body>
+</html>
