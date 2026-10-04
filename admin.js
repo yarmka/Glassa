@@ -3,14 +3,12 @@
  *  Glassa — Owner panel
  * ============================================================================
  *  Tabs:
- *   1) Orders      — live via onSnapshot, sub-tabs (in-progress/rejected/paid)
- *   2) Games       — CRUD + Cloudinary upload + offer block
- *   3) Coupons     — CRUD
- *   4) Popups      — CRUD
+ *   1) Orders       — live via onSnapshot, sub-tabs (in-progress/rejected/paid)
+ *   2) Games        — CRUD + Cloudinary upload + offer block
+ *   3) Coupons      — CRUD
+ *   4) Popups       — CRUD
  *   5) Announcement — settings/announcement
- *   6) Requests    — game requests + broken-link reports
- *
- *  The UI check is not security — Firestore rules protect everything.
+ *   6) Requests     — game requests + broken-link reports
  * ============================================================================
  */
 
@@ -24,7 +22,6 @@ import {
   addDoc,
   collection,
   query,
-  where,
   orderBy,
   getDocs,
   onSnapshot,
@@ -33,26 +30,21 @@ import {
   Timestamp
 } from "./firebase.js";
 import { CONFIG } from "./config.js";
-import { t, formatPrice, pickLocalized, getLang } from "./i18n.js";
+import { t, formatPrice, pickLocalized } from "./i18n.js";
 import {
   el,
   icon,
-  toast,
   toastSuccess,
   toastError,
-  toastInfo,
   openModal,
   confirmDialog,
   emptyState,
-  skeletonLines,
   formatDate,
-  formatPrice as fmtPrice,
   cloudinaryThumb,
   copyToClipboard,
-  generateUnlockCode,
-  toDate
+  generateUnlockCode
 } from "./ui.js";
-import { getUser, isOwner, sendEmailViaEmailJS } from "./auth.js";
+import { isOwner, sendEmailViaEmailJS } from "./auth.js";
 import { resetCatalogCache } from "./catalog.js";
 
 /* ============================================================================
@@ -61,10 +53,6 @@ import { resetCatalogCache } from "./catalog.js";
 
 let cleanupFns = [];
 
-/**
- * Render the admin panel into container.
- * Returns a cleanup function.
- */
 export async function renderAdmin(container) {
   if (!isOwner()) {
     container.innerHTML = "";
@@ -82,14 +70,13 @@ export async function renderAdmin(container) {
   header.appendChild(el("h1", { className: "page-header__title", textContent: t("admin.title") }));
   container.appendChild(header);
 
-  // Tab buttons
   const tabs = [
-    { id: "orders", label: t("admin.tabs.orders") },
-    { id: "games", label: t("admin.tabs.games") },
-    { id: "coupons", label: t("admin.tabs.coupons") },
-    { id: "popups", label: t("admin.tabs.popups") },
+    { id: "orders",       label: t("admin.tabs.orders") },
+    { id: "games",        label: t("admin.tabs.games") },
+    { id: "coupons",      label: t("admin.tabs.coupons") },
+    { id: "popups",       label: t("admin.tabs.popups") },
     { id: "announcement", label: t("admin.tabs.announcement") },
-    { id: "requests", label: t("admin.tabs.requests") }
+    { id: "requests",     label: t("admin.tabs.requests") }
   ];
 
   let activeTab = "orders";
@@ -127,12 +114,36 @@ export async function renderAdmin(container) {
   async function renderPanel() {
     panel.innerHTML = "";
     switch (activeTab) {
-      case "orders":       cleanupFns.push(await mountOrdersTab(panel)); break;
-      case "games":        cleanupFns.push(await mountGamesTab(panel)); break;
-      case "coupons":      cleanupFns.push(mountCouponsTab(panel)); break;
-      case "popups":       cleanupFns.push(mountPopupsTab(panel)); break;
-      case "announcement": cleanupFns.push(await mountAnnouncementTab(panel)); break;
-      case "requests":     cleanupFns.push(await mountRequestsTab(panel)); break;
+      case "orders": {
+        const fn = await mountOrdersTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
+      case "games": {
+        const fn = await mountGamesTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
+      case "coupons": {
+        const fn = mountCouponsTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
+      case "popups": {
+        const fn = mountPopupsTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
+      case "announcement": {
+        const fn = await mountAnnouncementTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
+      case "requests": {
+        const fn = await mountRequestsTab(panel);
+        cleanupFns.push(fn);
+        break;
+      }
     }
   }
 
@@ -147,19 +158,17 @@ export async function renderAdmin(container) {
    ========================================================================== */
 
 async function mountOrdersTab(container) {
-  const subs = { orders: null, secrets: new Map(), unlocks: new Map() };
+  let ordersSub = null;
 
-  // Sub-tabs (in progress / rejected / paid)
   let sub = "in-progress";
   const subSeg = el("div", { className: "segmented", style: { marginBottom: "12px" } });
   const subSlot = el("div");
   container.appendChild(subSeg);
   container.appendChild(subSlot);
 
-  /** Local caches updated by onSnapshot. */
   let ordersCache = [];
-  const secretsCache = new Map();  // orderId → code
-  const unlocksCache = new Set();  // `${uid}_${gameId}`
+  const secretsCache = new Map();
+  const unlocksCache = new Set();
 
   function paintSubTabs() {
     subSeg.innerHTML = "";
@@ -202,34 +211,14 @@ async function mountOrdersTab(container) {
       return;
     }
 
-    // Newest first
     list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
 
     const wrap = el("div", { className: "stack" });
-    for (const o of list) wrap.appendChild(buildAdminOrderCard(o, secretsCache, unlocksCache));
+    for (const o of list) wrap.appendChild(buildAdminOrderCard(o, secretsCache, unlocksCache, reloadSecrets));
     subSlot.appendChild(wrap);
   }
 
-  // Live listener for orders
-  subs.orders = onSnapshot(
-    query(collection(db, "orders"), orderBy("createdAt", "desc")),
-    (snap) => {
-      ordersCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      paintSubTabs();
-      paintList();
-
-      // Update document.title with pending count
-      const pending = ordersCache.filter((o) => o.status === "pending").length;
-      document.title = pending ? `(${pending}) Glassa Admin` : "Glassa";
-    },
-    (err) => {
-      console.error("orders snapshot failed:", err);
-      toastError(t("error.network"));
-    }
-  );
-
-  // Load secrets + unlocks once (and refresh after actions)
-  async function loadSecretsAndUnlocks() {
+  async function reloadSecrets() {
     try {
       const secSnap = await getDocs(collection(db, "orderSecrets"));
       secretsCache.clear();
@@ -241,24 +230,40 @@ async function mountOrdersTab(container) {
         const u = d.data() || {};
         if (u.uid && u.gameId) unlocksCache.add(`${u.uid}_${u.gameId}`);
       });
+
+      paintSubTabs();
+      paintList();
     } catch (e) {
       console.error("loadSecretsAndUnlocks failed:", e);
     }
   }
-  await loadSecretsAndUnlocks();
 
-  paintSubTabs();
+  ordersSub = onSnapshot(
+    query(collection(db, "orders"), orderBy("createdAt", "desc")),
+    (snap) => {
+      ordersCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      paintSubTabs();
+      paintList();
 
-  // Public API used by action handlers.
+      const pending = ordersCache.filter((o) => o.status === "pending").length;
+      document.title = pending ? `(${pending}) Glassa Admin` : "Glassa";
+    },
+    (err) => {
+      console.error("orders snapshot failed:", err);
+      toastError(t("error.network"));
+    }
+  );
+
+  await reloadSecrets();
+
   return () => {
-    try { subs.orders && subs.orders(); } catch (_) {}
+    try { if (ordersSub) ordersSub(); } catch (_) {}
   };
 }
 
-function buildAdminOrderCard(order, secretsCache, unlocksCache) {
+function buildAdminOrderCard(order, secretsCache, unlocksCache, onReload) {
   const card = el("div", { className: "glass glass--pad stack" });
 
-  // Header: id + status
   const head = el("div", { className: "row row--between" });
   head.appendChild(el("span", { className: "text-bold", textContent: `#${order.id.slice(0, 8).toUpperCase()}` }));
   const pillClass = order.status === "paid" ? "pill--success"
@@ -270,7 +275,6 @@ function buildAdminOrderCard(order, secretsCache, unlocksCache) {
   head.appendChild(el("span", { className: `pill ${pillClass}`, textContent: pillLabel }));
   card.appendChild(head);
 
-  // Customer
   const cust = el("div", { className: "stack stack--sm" });
   cust.appendChild(el("div", { className: "text-sm", textContent: `${t("admin.orders.customer")}: ${order.customerName || "—"}` }));
   if (order.phone) {
@@ -280,14 +284,13 @@ function buildAdminOrderCard(order, secretsCache, unlocksCache) {
       href: `tel:${encodeURIComponent(order.phone)}`,
       textContent: `📞 ${order.phone}`
     }));
-    const wa = el("a", {
+    row.appendChild(el("a", {
       className: "pill",
       href: `https://wa.me/${order.phone.replace(/[^\d]/g, "")}`,
       target: "_blank",
       rel: "noopener",
       textContent: `💬 ${t("admin.orders.whatsapp")}`
-    });
-    row.appendChild(wa);
+    }));
     cust.appendChild(row);
   }
   if (order.note) {
@@ -296,7 +299,6 @@ function buildAdminOrderCard(order, secretsCache, unlocksCache) {
   cust.appendChild(el("div", { className: "text-xs text-muted", textContent: formatDate(order.createdAt) }));
   card.appendChild(cust);
 
-  // Items
   const itemsList = el("div", { className: "stack stack--sm" });
   for (const it of (order.items || [])) {
     const r = el("div", { className: "row row--between" });
@@ -305,6 +307,335 @@ function buildAdminOrderCard(order, secretsCache, unlocksCache) {
     itemsList.appendChild(r);
   }
   card.appendChild(itemsList);
+
+  card.appendChild(adminRow(t("cart.subtotal"), formatPrice(order.subtotal)));
+  if (order.discountPercent) {
+    const dv = Math.round((order.subtotal * order.discountPercent) / 100 * 100) / 100;
+    card.appendChild(adminRow(`${t("cart.discount")} (${order.discountPercent}%)`, `- ${formatPrice(dv)}`));
+  }
+  card.appendChild(adminRow(t("cart.total"), formatPrice(order.total), true));
+
+  if (order.status === "pending") {
+    checkTotalMismatch(order).then((mismatch) => {
+      if (mismatch) {
+        const warn = el("div", {
+          className: "pill pill--warning",
+          style: { marginTop: "4px" },
+          textContent: t("admin.orders.totalMismatch")
+        });
+        card.insertBefore(warn, card.firstChild);
+      }
+    });
+  }
+
+  if (order.status === "rejected" && order.rejectReason) {
+    card.appendChild(el("div", {
+      className: "text-xs text-danger",
+      style: { whiteSpace: "pre-line" },
+      textContent: `${t("orders.reason")}: ${order.rejectReason}`
+    }));
+  }
+
+  if (order.status === "paid") {
+    const code = secretsCache.get(order.id) || "";
+    card.appendChild(el("hr", { className: "divider" }));
+
+    const codeRow = el("div", { className: "row row--between" });
+    codeRow.appendChild(el("span", { className: "text-xs text-muted", textContent: t("admin.orders.code") }));
+    codeRow.appendChild(el("span", { className: "text-bold code-input", style: { letterSpacing: "0.1em" }, textContent: code || "—" }));
+    card.appendChild(codeRow);
+
+    const gameIds = order.itemIds || [];
+    const unlockedCount = gameIds.filter((gid) => unlocksCache.has(`${order.uid}_${gid}`)).length;
+    const status = unlockedCount === gameIds.length && gameIds.length
+      ? t("admin.orders.unlocked")
+      : t("admin.orders.notUnlocked");
+    card.appendChild(el("div", { className: "text-xs", textContent: `${unlockedCount}/${gameIds.length} • ${status}` }));
+
+    const actionsRow = el("div", { className: "row", style: { gap: "8px", marginTop: "8px", flexWrap: "wrap" } });
+
+    if (code) {
+      actionsRow.appendChild(el("button", {
+        className: "btn btn--glass btn--sm",
+        type: "button",
+        textContent: t("admin.orders.copyCode"),
+        onClick: async () => {
+          const ok = await copyToClipboard(code);
+          if (ok) toastSuccess(t("common.copied"));
+        }
+      }));
+    }
+
+    actionsRow.appendChild(el("button", {
+      className: "btn btn--glass btn--sm",
+      type: "button",
+      textContent: t("admin.orders.resend"),
+      onClick: () => resendPaymentEmail(order, code)
+    }));
+
+    card.appendChild(actionsRow);
+  }
+
+  if (order.status === "pending") {
+    const actions = el("div", { className: "row", style: { gap: "8px", marginTop: "8px", flexWrap: "wrap" } });
+
+    actions.appendChild(el("button", {
+      className: "btn btn--primary",
+      type: "button",
+      textContent: t("admin.orders.markPaid"),
+      onClick: async () => {
+        const ok = await confirmDialog({
+          title: t("admin.orders.markPaid"),
+          message: t("admin.orders.confirmPaid"),
+          confirmLabel: t("common.confirm")
+        });
+        if (!ok) return;
+        await markOrderPaid(order, onReload);
+      }
+    }));
+
+    actions.appendChild(el("button", {
+      className: "btn btn--danger",
+      type: "button",
+      textContent: t("admin.orders.reject"),
+      onClick: () => promptRejectOrder(order, onReload)
+    }));
+
+    card.appendChild(actions);
+  }
+
+  return card;
+}
+
+function adminRow(label, value, bold) {
+  const r = el("div", { className: "row row--between" });
+  r.appendChild(el("span", { className: bold ? "text-bold" : "text-muted", textContent: label }));
+  r.appendChild(el("span", { className: bold ? "text-bold" : "", textContent: value }));
+  return r;
+}
+
+async function checkTotalMismatch(order) {
+  try {
+    let subtotal = 0;
+    for (const it of (order.items || [])) {
+      const snap = await getDoc(doc(db, "games", it.gameId));
+      if (!snap.exists()) continue;
+      const g = snap.data() || {};
+      const eff = currentEffectivePrice(g);
+      subtotal += eff;
+    }
+    const dp = Number(order.discountPercent) || 0;
+    const total = Math.max(0, Math.round((subtotal - (subtotal * dp) / 100) * 100) / 100);
+    return Math.abs(total - Number(order.total)) > 0.05;
+  } catch (_) {
+    return false;
+  }
+}
+
+function currentEffectivePrice(g) {
+  const offer = Number(g.offerPrice);
+  if (Number.isFinite(offer) && offer >= 0) {
+    const endsAt = g.offerEndsAt?.toDate?.();
+    if (!endsAt || endsAt.getTime() > Date.now()) return offer;
+  }
+  return Number(g.price) || 0;
+}
+
+async function markOrderPaid(order, onReload) {
+  const code = generateUnlockCode();
+
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, "orderSecrets", order.id), {
+      code,
+      createdAt: serverTimestamp()
+    });
+    batch.update(doc(db, "orders", order.id), {
+      status: "paid",
+      paidAt: serverTimestamp()
+    });
+    await batch.commit();
+  } catch (e) {
+    console.error("markOrderPaid failed:", e);
+    toastError(t("error.unknown"));
+    return;
+  }
+
+  const ok = await sendPaymentEmail(order, code);
+  if (ok) {
+    toastSuccess(t("admin.orders.paidSuccess"));
+  } else {
+    toastError(t("admin.orders.emailFailed"));
+    openModal({
+      title: t("admin.orders.code"),
+      body: code,
+      actions: [
+        { label: t("common.ok") },
+        {
+          label: t("admin.orders.copyCode"),
+          variant: "primary",
+          closeAfter: true,
+          onClick: async () => { await copyToClipboard(code); toastSuccess(t("common.copied")); }
+        }
+      ]
+    });
+  }
+
+  if (typeof onReload === "function") await onReload();
+}
+
+async function promptRejectOrder(order, onReload) {
+  const body = el("div");
+  const field = el("div", { className: "field" });
+  field.appendChild(el("label", { className: "field__label", textContent: t("admin.orders.reason") }));
+  const ta = el("textarea", { className: "textarea", maxLength: 300 });
+  field.appendChild(ta);
+  body.appendChild(field);
+
+  openModal({
+    title: t("admin.orders.reject"),
+    body,
+    actions: [
+      { label: t("common.cancel"), variant: "ghost" },
+      {
+        label: t("common.confirm"),
+        variant: "danger",
+        onClick: async () => {
+          const reason = ta.value.trim();
+          if (!reason) { toastError(t("admin.orders.reasonRequired")); return false; }
+          await rejectOrder(order, reason, onReload);
+        }
+      }
+    ]
+  });
+}
+
+async function rejectOrder(order, reason, onReload) {
+  try {
+    await updateDoc(doc(db, "orders", order.id), {
+      status: "rejected",
+      rejectReason: reason,
+      rejectionSeen: false
+    });
+    if (order.couponCode) {
+      try {
+        const couponSnap = await getDoc(doc(db, "coupons", order.couponCode));
+        if (couponSnap.exists() && couponSnap.data()?.mode === "once") {
+          await deleteDoc(doc(db, "couponUses", `${order.couponCode}_${order.uid}`));
+        }
+      } catch (e) {
+        console.error("coupon free failed:", e);
+      }
+    }
+    toastSuccess(t("admin.orders.rejectedSuccess"));
+    if (typeof onReload === "function") await onReload();
+  } catch (e) {
+    console.error("rejectOrder failed:", e);
+    toastError(t("error.unknown"));
+  }
+}
+
+async function sendPaymentEmail(order, code) {
+  const siteUrl = CONFIG.siteUrl;
+  const games = (order.items || []).map((it) => it.title).join("\n");
+
+  const params = {
+    to_email: order.email,
+    email: order.email,
+    customer_name: order.customerName || "",
+    customerName: order.customerName || "",
+    order_id: order.id.slice(0, 8).toUpperCase(),
+    orderId: order.id.slice(0, 8).toUpperCase(),
+    games,
+    total: Number(order.total).toFixed(2),
+    code,
+    passcode: code,
+    site_url: siteUrl
+  };
+
+  const res = await sendEmailViaEmailJS(CONFIG.emailjs.paymentTemplateId, params);
+  return res.ok;
+}
+
+async function resendPaymentEmail(order, code) {
+  const ok = await sendPaymentEmail(order, code);
+  if (ok) toastSuccess(t("admin.orders.emailSent"));
+  else toastError(t("admin.orders.emailFailed"));
+}
+
+/* ============================================================================
+   2) GAMES TAB
+   ========================================================================== */
+
+async function mountGamesTab(container) {
+  const state = { search: "" };
+  const listSlot = el("div");
+
+  const bar = el("div", { className: "row row--between", style: { gap: "8px", marginBottom: "12px" } });
+  const search = el("input", {
+    className: "input grow",
+    placeholder: t("admin.games.searchPlaceholder"),
+    onInput: (e) => { state.search = e.target.value.toLowerCase(); paint(); }
+  });
+  const addBtn = el("button", {
+    className: "btn btn--primary",
+    type: "button",
+    onClick: () => openGameForm(null, () => paint())
+  });
+  addBtn.appendChild(icon("plus", 18));
+  addBtn.appendChild(el("span", { textContent: t("admin.games.add") }));
+  bar.appendChild(search);
+  bar.appendChild(addBtn);
+  container.appendChild(bar);
+  container.appendChild(listSlot);
+
+  let games = [];
+
+  async function reload() {
+    try {
+      const snap = await getDocs(collection(db, "games"));
+      games = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      games.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    } catch (e) {
+      console.error("games load failed:", e);
+      games = [];
+    }
+    paint();
+  }
+
+  function paint() {
+    listSlot.innerHTML = "";
+    if (!games.length) {
+      listSlot.appendChild(emptyState({
+        iconName: "gamepad",
+        title: t("admin.games.none")
+      }));
+      return;
+    }
+    const needle = state.search.trim();
+    const filtered = needle
+      ? games.filter((g) =>
+          (g.title_ar || "").toLowerCase().includes(needle) ||
+          (g.title_en || "").toLowerCase().includes(needle) ||
+          g.id.toLowerCase().includes(needle)
+        )
+      : games;
+
+    const wrap = el("div", { className: "stack" });
+    for (const g of filtered) wrap.appendChild(buildAdminGameRow(g, reload));
+    listSlot.appendChild(wrap);
+  }
+
+  await reload();
+  return () => {};
+}
+
+function buildAdminGameRow(game, onChanged) {
+  const row = el("div", { className: "line", style: { padding: "12px" } });
+
+  const thumb = el("div", { className: "line__thumb" });
+  if (game.coverUrl) {
+    constappendChild(itemsList);
 
   // Totals
   card.appendChild(row2(t("cart.subtotal"), formatPrice(order.subtotal)));
