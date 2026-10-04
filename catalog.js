@@ -16,14 +16,11 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
   addDoc,
   collection,
   query,
   where,
-  orderBy,
   getDocs,
-  onSnapshot,
   serverTimestamp,
   deleteDoc
 } from "./firebase.js";
@@ -50,34 +47,27 @@ import {
   normalizeForSearch,
   cloudinaryThumb,
   cloudinaryHero,
-  copyToClipboard,
-  secureRandomInt
+  copyToClipboard
 } from "./ui.js";
-import { getUser, getProfile, isOwner, isVerified } from "./auth.js";
+import { getUser, getProfile } from "./auth.js";
 
 /* ============================================================================
    Module state
    ========================================================================== */
 
-/** Cache of loaded games (public). */
 let gamesCache = [];
-/** Unsubscribe from onSnapshot, if used. */
-let gamesUnsub = null;
-/** Favorites in memory (mirrors users/{uid}.favorites when logged in). */
 let favoritesSet = new Set();
 
 /* ============================================================================
    Public API
    ========================================================================== */
 
-/** Load all visible games into cache. */
 export async function loadGames() {
   try {
     const ref = collection(db, "games");
-    const q = isOwner() ? query(ref) : query(ref, where("hidden", "==", false));
+    const q = query(ref, where("hidden", "==", false));
     const snap = await getDocs(q);
     gamesCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    // Sort newest first (single-field sort done in JS to avoid indexes).
     gamesCache.sort((a, b) => {
       const ta = a.createdAt?.seconds || 0;
       const tb = b.createdAt?.seconds || 0;
@@ -91,7 +81,6 @@ export async function loadGames() {
   }
 }
 
-/** Get a single game from cache or Firestore. */
 export async function getGame(gameId) {
   const cached = gamesCache.find((g) => g.id === gameId);
   if (cached) return cached;
@@ -107,7 +96,6 @@ export async function getGame(gameId) {
   }
 }
 
-/** Effective price of a game taking the current offer into account. */
 export function effectivePrice(game) {
   if (!game) return 0;
   const offer = Number(game.offerPrice);
@@ -117,7 +105,6 @@ export function effectivePrice(game) {
   return offer;
 }
 
-/** True if an offer is currently active (offer price + not expired). */
 export function hasActiveOffer(game) {
   if (!game) return false;
   const offer = Number(game.offerPrice);
@@ -127,7 +114,6 @@ export function hasActiveOffer(game) {
   return offer < Number(game.price || 0);
 }
 
-/** Refresh favorites from the current user profile. */
 export function syncFavoritesFromProfile() {
   const profile = getProfile();
   favoritesSet = new Set(Array.isArray(profile?.favorites) ? profile.favorites : []);
@@ -137,21 +123,18 @@ export function syncFavoritesFromProfile() {
    Favorites
    ========================================================================== */
 
-/** Is this game a favorite of the current user? */
 export function isFavorite(gameId) {
   return favoritesSet.has(gameId);
 }
 
-/**
- * Toggle favorite state for a game (writes users/{uid}.favorites).
- * Returns the new state, or null on failure.
- */
 export async function toggleFavorite(gameId) {
   const user = getUser();
   if (!user) {
     toastInfo(t("toast.loginRequired"));
     return null;
   }
+
+  const { updateDoc } = await import("./firebase.js");
 
   const next = new Set(favoritesSet);
   if (next.has(gameId)) next.delete(gameId);
@@ -175,7 +158,6 @@ export async function toggleFavorite(gameId) {
    Rendering helpers
    ========================================================================== */
 
-/** Render a star rating display from an average. */
 function starsDisplay(avg) {
   const wrap = el("div", { className: "stars", "aria-hidden": "true" });
   const rounded = Math.round(avg || 0);
@@ -186,19 +168,16 @@ function starsDisplay(avg) {
   return wrap;
 }
 
-/** Platform badge text. */
 function platformLabel(platform) {
   return platform === "android" ? "Android" : "PC";
 }
 
-/** Build a single game card. */
 export function buildGameCard(game) {
   const card = el("a", {
     className: "card",
     href: `#/game/${encodeURIComponent(game.id)}`
   });
 
-  // Cover
   const cover = el("div", { className: "card__cover" });
   if (game.coverUrl) {
     const img = el("img", {
@@ -208,14 +187,11 @@ export function buildGameCard(game) {
       width: "600",
       height: "375"
     });
-    img.addEventListener("error", () => {
-      img.remove();
-    });
+    img.addEventListener("error", () => img.remove());
     cover.appendChild(img);
   }
   card.appendChild(cover);
 
-  // Badges
   const badges = el("div", { className: "card__badges" });
   if (isNewGame(game.createdAt)) {
     badges.appendChild(el("span", { className: "badge badge--new", textContent: t("catalog.badge.new") }));
@@ -231,7 +207,6 @@ export function buildGameCard(game) {
   }
   if (badges.childNodes.length) card.appendChild(badges);
 
-  // Favorite heart
   const fav = el("button", {
     type: "button",
     className: `card__fav${isFavorite(game.id) ? " is-active" : ""}`,
@@ -246,7 +221,6 @@ export function buildGameCard(game) {
   }, icon("heart", 18));
   card.appendChild(fav);
 
-  // Body
   const body = el("div", { className: "card__body" });
   body.appendChild(el("div", {
     className: "card__title",
@@ -271,7 +245,6 @@ export function buildGameCard(game) {
   return card;
 }
 
-/** Filter chips row. */
 function buildChips(active, onChange) {
   const chips = el("div", { className: "chips" });
   const items = [
@@ -292,7 +265,6 @@ function buildChips(active, onChange) {
   return chips;
 }
 
-/** Sort dropdown. */
 function buildSort(current, onChange) {
   const wrap = el("select", {
     className: "select",
@@ -313,7 +285,6 @@ function buildSort(current, onChange) {
   return wrap;
 }
 
-/** Apply filter + search + sort to the cache. */
 function applyFilters({ filter, search, sort }) {
   const needle = normalizeForSearch(search || "");
   let list = gamesCache.slice();
@@ -321,6 +292,330 @@ function applyFilters({ filter, search, sort }) {
   if (filter === "pc") list = list.filter((g) => g.platform === "pc");
   if (filter === "android") list = list.filter((g) => g.platform === "android");
   if (filter === "offers") list = list.filter((g) => hasActiveOffer(g));
+
+  if (needle) {
+    list = list.filter((g) => {
+      const a = normalizeForSearch(g.title_ar);
+      const e = normalizeForSearch(g.title_en);
+      return a.includes(needle) || e.includes(needle);
+    });
+  }
+
+  switch (sort) {
+    case "topRated":
+      list.sort((a, b) => (b.avgRating || 0) - (a.avgRating || 0));
+      break;
+    case "priceLow":
+      list.sort((a, b) => effectivePrice(a) - effectivePrice(b));
+      break;
+    case "priceHigh":
+      list.sort((a, b) => effectivePrice(b) - effectivePrice(a));
+      break;
+    case "newest":
+    default:
+      list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  }
+  return list;
+}
+
+/* ============================================================================
+   Home view
+   ========================================================================== */
+
+export async function renderHome(container) {
+  const state = { filter: "all", search: "", sort: "newest" };
+
+  const header = el("div", { className: "page-header" });
+  header.appendChild(el("h1", { className: "page-header__title", textContent: t("app.name") }));
+  header.appendChild(el("div", { className: "page-header__subtitle", textContent: t("app.tagline") }));
+  container.appendChild(header);
+
+  const searchWrap = el("div", { className: "field", style: { marginBottom: "12px" } });
+  const searchInput = el("input", {
+    className: "input",
+    type: "search",
+    placeholder: t("catalog.search.placeholder"),
+    autocomplete: "off",
+    onInput: (e) => {
+      state.search = e.target.value;
+      rerender();
+    }
+  });
+  searchWrap.appendChild(searchInput);
+  container.appendChild(searchWrap);
+
+  const controls = el("div", { className: "row row--between", style: { marginBottom: "12px", gap: "8px" } });
+  const chipsSlot = el("div", { className: "grow" });
+  const sortSlot  = el("div", {}, buildSort(state.sort, (v) => { state.sort = v; rerender(); }));
+  controls.appendChild(chipsSlot);
+  controls.appendChild(sortSlot);
+  container.appendChild(controls);
+
+  const resultsSlot = el("div");
+  container.appendChild(resultsSlot);
+
+  function paintChips() {
+    chipsSlot.innerHTML = "";
+    chipsSlot.appendChild(buildChips(state.filter, (id) => {
+      state.filter = id;
+      paintChips();
+      rerender();
+    }));
+  }
+  paintChips();
+
+  function rerender() {
+    resultsSlot.innerHTML = "";
+
+    const list = applyFilters(state);
+
+    if (!gamesCache.length) {
+      resultsSlot.appendChild(emptyState({
+        iconName: "gamepad",
+        title: t("catalog.emptyAll")
+      }));
+      return;
+    }
+    if (!list.length) {
+      resultsSlot.appendChild(emptyState({
+        iconName: "search",
+        title: t("catalog.empty")
+      }));
+      return;
+    }
+
+    const grid = el("div", { className: "grid-games" });
+    for (const g of list) grid.appendChild(buildGameCard(g));
+    resultsSlot.appendChild(grid);
+  }
+
+  resultsSlot.appendChild(skeletonGrid(6));
+
+  await ensureGamesLoadedWithRatings();
+  rerender();
+
+  return () => {};
+}
+
+let ratingsLoaded = false;
+
+async function ensureGamesLoadedWithRatings() {
+  if (ratingsLoaded) return;
+  if (!gamesCache.length) await loadGames();
+  syncFavoritesFromProfile();
+
+  try {
+    const snap = await getDocs(collection(db, "reviews"));
+    const agg = new Map();
+    snap.forEach((d) => {
+      const r = d.data() || {};
+      const g = r.gameId;
+      const s = Number(r.stars) || 0;
+      if (!g) return;
+      const cur = agg.get(g) || { sum: 0, count: 0 };
+      cur.sum += s;
+      cur.count += 1;
+      agg.set(g, cur);
+    });
+    for (const g of gamesCache) {
+      const a = agg.get(g.id);
+      if (a && a.count) {
+        g.avgRating = a.sum / a.count;
+        g.ratingCount = a.count;
+      } else {
+        g.avgRating = 0;
+        g.ratingCount = 0;
+      }
+    }
+  } catch (e) {
+    console.error("ratings load failed:", e);
+  }
+
+  ratingsLoaded = true;
+}
+
+export function resetCatalogCache() {
+  gamesCache = [];
+  favoritesSet = new Set();
+  ratingsLoaded = false;
+}
+
+/* ============================================================================
+   Game page
+   ========================================================================== */
+
+export async function renderGame(container, gameId) {
+  container.appendChild(skeletonGrid(2));
+
+  const game = await getGame(gameId);
+  container.innerHTML = "";
+  if (!game) {
+    container.appendChild(emptyState({
+      iconName: "info",
+      title: t("catalog.notFound")
+    }));
+    return () => {};
+  }
+
+  const reviews = await loadReviewsForGame(game.id);
+  const avg = reviews.length
+    ? reviews.reduce((s, r) => s + (r.stars || 0), 0) / reviews.length
+    : 0;
+
+  const hero = el("div", { className: "game-hero" });
+  const shots = Array.isArray(game.screenshots) ? game.screenshots.slice(0, 8) : [];
+  const heroImages = shots.length ? shots : [game.coverUrl].filter(Boolean);
+
+  const carouselWrap = el("div");
+  if (heroImages.length) {
+    const carousel = el("div", { className: "carousel" });
+    heroImages.forEach((url, i) => {
+      const slide = el("div", { className: "carousel__slide" });
+      const img = el("img", {
+        src: cloudinaryHero(url, 1200),
+        alt: `${pickLocalized(game.title_ar, game.title_en)} — ${i + 1}`,
+        loading: i === 0 ? "eager" : "lazy",
+        width: "1200",
+        height: "750"
+      });
+      img.addEventListener("error", () => img.remove());
+      slide.appendChild(img);
+      carousel.appendChild(slide);
+    });
+    carouselWrap.appendChild(carousel);
+
+    const dots = el("div", { className: "carousel__dots" });
+    heroImages.forEach((_, i) => dots.appendChild(el("span", { className: `carousel__dot${i === 0 ? " is-active" : ""}` })));
+    carouselWrap.appendChild(dots);
+
+    carousel.addEventListener("scroll", () => {
+      const w = carousel.clientWidth || 1;
+      const idx = Math.round(carousel.scrollLeft / w);
+      Array.from(dots.children).forEach((d, i) => d.classList.toggle("is-active", i === idx));
+    }, { passive: true });
+  } else {
+    carouselWrap.appendChild(el("div", { className: "skel", style: { aspectRatio: "16 / 10", borderRadius: "22px" } }));
+  }
+  hero.appendChild(carouselWrap);
+
+  const right = el("div", { className: "glass glass--pad stack" });
+
+  const title = el("h1", { style: { fontSize: "var(--fs-2xl)", lineHeight: "1.2", fontWeight: "700" } });
+  title.textContent = pickLocalized(game.title_ar, game.title_en) || "—";
+  right.appendChild(title);
+
+  const meta = el("div", { className: "row row--wrap", style: { gap: "8px" } });
+  meta.appendChild(el("span", { className: "pill", textContent: platformLabel(game.platform) }));
+  if (game.size) meta.appendChild(el("span", { className: "pill", textContent: `${t("catalog.size")}: ${game.size}` }));
+  if (Number.isFinite(Number(game.worksPercent))) {
+    meta.appendChild(el("span", { className: "pill pill--success", textContent: t("catalog.works", { n: game.worksPercent }) }));
+  }
+  right.appendChild(meta);
+
+  if (reviews.length) {
+    const r = el("div", { className: "row", style: { gap: "8px" } });
+    r.appendChild(starsDisplay(avg));
+    r.appendChild(el("span", { className: "text-xs text-muted", textContent: t("catalog.ratingAvg", { avg: avg.toFixed(1), count: reviews.length }) }));
+    right.appendChild(r);
+  }
+
+  const priceBox = el("div", { className: "row row--wrap", style: { gap: "12px", alignItems: "baseline" } });
+  if (hasActiveOffer(game)) {
+    priceBox.appendChild(el("span", { className: "card__price-old", textContent: formatPrice(game.price) }));
+    priceBox.appendChild(el("span", { className: "card__price-new", style: { fontSize: "var(--fs-2xl)" }, textContent: formatPrice(game.offerPrice) }));
+    const endsAt = game.offerEndsAt?.toDate?.();
+    if (endsAt) {
+      const cd = el("span", { className: "countdown" });
+      const tick = () => { cd.textContent = `${t("catalog.endIn")} ${formatCountdown(endsAt)}`; };
+      tick();
+      setInterval(tick, 1000);
+      priceBox.appendChild(cd);
+    } else {
+      priceBox.appendChild(el("span", { className: "pill pill--danger", textContent: t("catalog.badge.offer") }));
+    }
+  } else {
+    priceBox.appendChild(el("span", { className: "card__price-new", style: { fontSize: "var(--fs-2xl)" }, textContent: formatPrice(game.price) }));
+  }
+  right.appendChild(priceBox);
+
+  const actions = el("div", { className: "row", style: { gap: "8px", flexWrap: "wrap" } });
+
+  const addBtn = el("button", {
+    className: "btn btn--glass",
+    type: "button",
+    onClick: async () => {
+      const { addToCart, isInCart } = await import("./cart.js");
+      if (isInCart(game.id)) {
+        toastInfo(t("catalog.inCart"));
+        return;
+      }
+      const ok = await addToCart(game);
+      if (ok) toastSuccess(t("toast.addedToCart"));
+    }
+  });
+  addBtn.appendChild(icon("cart", 18));
+  addBtn.appendChild(el("span", { textContent: t("catalog.addToCart") }));
+
+  const buyBtn = el("button", {
+    className: "btn btn--primary",
+    type: "button",
+    onClick: async () => {
+      const { addToCart, goToCheckout } = await import("./cart.js");
+      const ok = await addToCart(game);
+      if (ok) goToCheckout();
+    }
+  });
+  buyBtn.appendChild(icon("check", 18));
+  buyBtn.appendChild(el("span", { textContent: t("catalog.buyNow") }));
+
+  actions.appendChild(addBtn);
+  actions.appendChild(buyBtn);
+  right.appendChild(actions);
+
+  const extras = el("div", { className: "row", style: { gap: "8px" } });
+
+  const fav = el("button", {
+    type: "button",
+    className: `btn btn--glass${isFavorite(game.id) ? " is-active" : ""}`,
+    onClick: async () => {
+      const now = await toggleFavorite(game.id);
+      fav.classList.toggle("is-active", now === true);
+    }
+  });
+  fav.appendChild(icon("heart", 18));
+  fav.appendChild(el("span", { textContent: t("nav.favorites") }));
+
+  const share = el("button", {
+    type: "button",
+    className: "btn btn--glass",
+    onClick: async () => {
+      const url = `${location.origin}${location.pathname}#/game/${encodeURIComponent(game.id)}`;
+      const title = pickLocalized(game.title_ar, game.title_en);
+      try {
+        if (navigator.share) {
+          await navigator.share({ title, url });
+        } else {
+          const ok = await copyToClipboard(url);
+          if (ok) toastSuccess(t("toast.linkCopied"));
+        }
+      } catch (_) {}
+    }
+  });
+  share.appendChild(icon("share", 18));
+  share.appendChild(el("span", { textContent: t("catalog.share") }));
+
+  extras.appendChild(fav);
+  extras.appendChild(share);
+  right.appendChild(extras);
+
+  hero.appendChild(right);
+  container.appendChild(hero);
+
+  const desc = pickLocalized(game.desc_ar, game.desc_en);
+  if (desc) {
+    const box = el("div", { className: "glass glass--pad stack", style: { marginBottom: "16px" } });
+    box.appendChild(el("h2", { style: { fontSize: "var(--fs-lg)", fontWeight: "700" }, textContent: t("catalog.description") }));
+    box.appendChild(el("p", { style: { whiteSpace: "pre-line", color: "var(--text-2)" }, textContent:ilter((g) => hasActiveOffer(g));
 
   if (needle) {
     list = list.filter((g) => {
