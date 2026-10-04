@@ -723,3 +723,247 @@ async function renderVerify(main) {
       checkComplete();
     });
     boxes.push(b);
+    otp.appendChild(b);
+  }
+  card.appendChild(otp);
+
+  const status = el("div", { className: "text-sm", style: { minHeight: "1.4em" } });
+  card.appendChild(status);
+
+  const hint = el("div", { className: "text-xs text-muted", textContent: t("verify.checkSpam") });
+  card.appendChild(hint);
+
+  // Resend + countdown
+  const resendRow = el("div", { className: "row row--between" });
+  const countdown = el("div", { className: "text-xs text-muted" });
+  const resend = el("button", {
+    className: "btn btn--ghost btn--sm",
+    type: "button",
+    textContent: t("verify.resend")
+  });
+  resendRow.appendChild(countdown);
+  resendRow.appendChild(resend);
+  card.appendChild(resendRow);
+
+  main.appendChild(card);
+
+  // Countdown tick for code expiry
+  function tickCountdowns() {
+    const codeLeft = getCodeTimeLeftMs();
+    const cooldown = getResendCooldownMs();
+
+    if (cooldown > 0) {
+      resend.disabled = true;
+      resend.textContent = t("verify.resendIn", { n: Math.ceil(cooldown / 1000) });
+    } else {
+      resend.disabled = false;
+      resend.textContent = t("verify.resend");
+    }
+
+    if (codeLeft > 0) {
+      const m = Math.floor(codeLeft / 60000);
+      const s = Math.floor((codeLeft % 60000) / 1000);
+      countdown.textContent = `${t("verify.timeLeft")}: ${m}:${String(s).padStart(2, "0")}`;
+    } else {
+      countdown.textContent = "";
+    }
+  }
+  tickCountdowns();
+  const tickId = setInterval(tickCountdowns, 1000);
+  viewCleanup.push(() => clearInterval(tickId));
+
+  resend.addEventListener("click", async () => {
+    resend.disabled = true;
+    status.textContent = t("verify.sending");
+    const res = await sendVerificationCode({ email: user.email });
+    if (res.ok) {
+      status.textContent = "";
+      toastInfo(t("verify.sendError") === status.textContent ? "" : t("verify.success"));
+      boxes.forEach((b) => (b.value = ""));
+      boxes[0].focus();
+    } else if (res.code === "cooldown") {
+      toastInfo(t("auth.errors.tooMany"));
+    } else {
+      status.textContent = "";
+      toastError(t("verify.sendError"));
+    }
+    tickCountdowns();
+  });
+
+  async function checkComplete() {
+    const code = boxes.map((b) => b.value).join("");
+    if (code.length !== 6) return;
+    status.textContent = "";
+    const res = await verifyCode({ code });
+    if (res.ok) {
+      toastSuccess(t("verify.success"));
+      location.hash = "#/";
+      return;
+    }
+    if (res.code === "expired") status.textContent = t("verify.expired");
+    else if (res.code === "tooMany") status.textContent = t("verify.tooManyAttempts");
+    else status.textContent = t("verify.wrongCode");
+    status.className = "text-sm text-danger";
+    boxes.forEach((b) => (b.value = ""));
+    boxes[0].focus();
+  }
+
+  // Pre-send if none exists yet.
+  if (getCodeTimeLeftMs() === 0) {
+    resend.click();
+  }
+}
+
+/* ============================================================================
+   Account page
+   ========================================================================== */
+
+async function renderAccount(main) {
+  const user = getUser();
+  if (!user) { location.hash = "#/login"; return; }
+
+  const header = el("div", { className: "page-header" });
+  header.appendChild(el("h1", { className: "page-header__title", textContent: t("account.title") }));
+  main.appendChild(header);
+
+  const profile = getProfile() || {};
+
+  const card = el("div", { className: "glass glass--pad-lg stack" });
+
+  card.appendChild(el("div", { className: "text-lg text-bold", textContent: profile.name || user.displayName || "" }));
+  card.appendChild(el("div", { className: "text-sm text-muted", textContent: user.email || "" }));
+
+  if (!isVerified() && !isOwner()) {
+    card.appendChild(el("div", { className: "pill pill--warning", textContent: t("account.verificationPending") }));
+    card.appendChild(el("button", {
+      className: "btn btn--primary",
+      type: "button",
+      textContent: t("account.verifyNow"),
+      onClick: () => { location.hash = "#/verify"; }
+    }));
+  }
+
+  card.appendChild(el("hr", { className: "divider" }));
+
+  // Language toggle
+  const langRow = el("div", { className: "row row--between" });
+  langRow.appendChild(el("span", { textContent: t("account.language") }));
+  const langBtn = el("button", {
+    className: "btn btn--glass btn--sm",
+    type: "button",
+    textContent: getLang() === "ar" ? t("account.english") : t("account.arabic"),
+    onClick: () => { toggleLang(); renderShell(); navigate(); }
+  });
+  langRow.appendChild(langBtn);
+  card.appendChild(langRow);
+
+  // Theme toggle
+  const themeRow = el("div", { className: "row row--between" });
+  themeRow.appendChild(el("span", { textContent: t("account.theme") }));
+  const mode = getThemeMode();
+  const themeLabel = mode === "auto" ? t("account.themeAuto")
+                  : mode === "light" ? t("account.themeLight")
+                  : t("account.themeDark");
+  themeRow.appendChild(el("button", {
+    className: "btn btn--glass btn--sm",
+    type: "button",
+    textContent: themeLabel,
+    onClick: () => { cycleTheme(); renderShell(); navigate(); }
+  }));
+  card.appendChild(themeRow);
+
+  card.appendChild(el("hr", { className: "divider" }));
+
+  // Request game
+  card.appendChild(el("button", {
+    className: "btn btn--glass btn--block",
+    type: "button",
+    textContent: t("account.requestGame"),
+    onClick: () => openGameRequestModal()
+  }));
+
+  // Admin shortcut
+  if (isOwner()) {
+    card.appendChild(el("button", {
+      className: "btn btn--glass btn--block",
+      type: "button",
+      textContent: t("nav.admin"),
+      onClick: () => { location.hash = "#/admin"; }
+    }));
+  }
+
+  // Logout
+  const logoutBtn = el("button", {
+    className: "btn btn--danger btn--block",
+    type: "button",
+    textContent: t("account.logout"),
+    onClick: async () => {
+      const ok = await (await import("./ui.js")).confirmDialog({
+        title: t("account.logout"),
+        message: t("account.logoutConfirm"),
+        confirmLabel: t("nav.logout"),
+        danger: true
+      });
+      if (!ok) return;
+      logoutBtn.disabled = true;
+      await logout();
+      resetCatalogCache();
+      location.hash = "#/";
+    }
+  });
+  card.appendChild(logoutBtn);
+
+  main.appendChild(card);
+}
+
+/* ============================================================================
+   Auth-aware re-render + boot
+   ========================================================================== */
+
+let previousUid = null;
+
+onAuth(async ({ user, profile }) => {
+  const uid = user?.uid || null;
+  if (uid !== previousUid) {
+    previousUid = uid;
+    syncFavoritesFromProfile();
+    renderShell();
+    navigate();
+    if (user) {
+      // Give popups + rejected orders a moment to appear after the shell is up.
+      setTimeout(() => { mountPopups(); }, 600);
+      setTimeout(() => { checkRejectedOrders(); }, 900);
+    }
+  }
+});
+
+onLangChange(() => {
+  renderShell();
+  navigate();
+});
+
+window.addEventListener("hashchange", () => {
+  navigate();
+});
+
+/* ---- Boot ---- */
+
+(function boot() {
+  initLang();
+  applyTheme(getThemeMode());
+  loadCartFromStorage();
+
+  // Warn the developer if the owner email is not configured.
+  if (!isOwnerEmailConfigured()) {
+    console.warn("[Glassa] OWNER_EMAIL_HERE has not been replaced in config.js");
+  }
+
+  // Initial render happens via onAuth (which fires immediately).
+  // But render a placeholder shell so the page is never blank:
+  renderShell();
+  const main = document.getElementById("main-region");
+  if (main) {
+    main.innerHTML = "";
+    main.appendChild(skeletonLines(4));
+  }
+})();
