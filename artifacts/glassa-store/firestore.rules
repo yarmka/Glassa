@@ -1,0 +1,218 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn()
+        && request.auth.token.email == 'OWNER_EMAIL_HERE';
+    }
+
+    function hasStaffPermission(permission) {
+      return signedIn()
+        && request.auth.token.email != null
+        && exists(/databases/$(database)/documents/staff/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/staff/$(request.auth.token.email)).data.active == true
+        && get(/databases/$(database)/documents/staff/$(request.auth.token.email)).data.permissions[permission] == true
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.emailVerified == true;
+    }
+
+    function canViewOrders() {
+      return isOwner()
+        || hasStaffPermission('orders.view')
+        || hasStaffPermission('orders.process');
+    }
+
+    function canProcessOrders() {
+      return isOwner() || hasStaffPermission('orders.process');
+    }
+
+    function canManageGames() {
+      return isOwner() || hasStaffPermission('games.manage');
+    }
+
+    function canManageCoupons() {
+      return isOwner() || hasStaffPermission('coupons.manage');
+    }
+
+    function canManagePopups() {
+      return isOwner() || hasStaffPermission('popups.manage');
+    }
+
+    function canManageRequests() {
+      return isOwner() || hasStaffPermission('requests.manage');
+    }
+
+    function canManageSettings() {
+      return isOwner() || hasStaffPermission('settings.manage');
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function validCoupon(order) {
+      return (order.couponCode == '' && order.discountPercent == 0)
+        || (order.couponCode != ''
+          && exists(/databases/$(database)/documents/coupons/$(order.couponCode))
+          && get(/databases/$(database)/documents/coupons/$(order.couponCode)).data.active == true
+          && get(/databases/$(database)/documents/coupons/$(order.couponCode)).data.percent == order.discountPercent
+          && (get(/databases/$(database)/documents/coupons/$(order.couponCode)).data.expiresAt == null
+            || get(/databases/$(database)/documents/coupons/$(order.couponCode)).data.expiresAt > request.time)
+          && (get(/databases/$(database)/documents/coupons/$(order.couponCode)).data.mode == 'open'
+            || existsAfter(/databases/$(database)/documents/couponUses/$(order.couponCode + '_' + request.auth.uid))));
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner() || isSelf(uid);
+      allow list: if isOwner();
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly([
+          'name', 'email', 'emailVerified', 'favorites', 'dismissedPopups', 'createdAt'
+        ])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 40;
+      allow update: if isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'emailVerified', 'favorites', 'dismissedPopups']);
+      allow delete: if false;
+    }
+
+    match /staff/{email} {
+      allow get: if isOwner()
+        || (signedIn() && request.auth.token.email == email);
+      allow list: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.email == email
+        && request.resource.data.active is bool
+        && request.resource.data.permissions is map;
+      allow delete: if isOwner();
+    }
+
+    match /games/{gameId} {
+      allow read: if resource.data.hidden == false || canManageGames();
+      allow create, update, delete: if canManageGames();
+    }
+
+    match /links/{gameId} {
+      allow read: if canManageGames()
+        || (signedIn()
+          && exists(/databases/$(database)/documents/unlocks/$(request.auth.uid + '_' + gameId)));
+      allow write: if canManageGames();
+    }
+
+    match /orders/{orderId} {
+      allow read: if canViewOrders()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.customerName is string
+        && request.resource.data.customerName.size() > 0
+        && request.resource.data.customerName.size() <= 60
+        && request.resource.data.itemIds is list
+        && request.resource.data.itemIds.size() > 0
+        && request.resource.data.itemIds.size() <= 20
+        && validCoupon(request.resource.data);
+      allow update: if isOwner()
+        || (canProcessOrders()
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['paid', 'rejected']
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'rejectReason', 'rejectionSeen', 'paidAt']))
+        || (signedIn()
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['rejectionSeen']));
+      allow delete: if isOwner();
+    }
+
+    match /orderSecrets/{orderId} {
+      allow read, create, update: if isOwner() || hasStaffPermission('orders.process');
+      allow delete: if isOwner();
+    }
+
+    match /unlocks/{unlockId} {
+      allow get: if isOwner()
+        || (signedIn() && unlockId.matches(request.auth.uid + '_.*'));
+      allow list: if isOwner()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && unlockId == request.auth.uid + '_' + request.resource.data.gameId
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.uid == request.auth.uid
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.status == 'paid'
+        && request.resource.data.gameId in get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.itemIds
+        && request.resource.data.code == get(/databases/$(database)/documents/orderSecrets/$(request.resource.data.orderId)).data.code;
+      allow update, delete: if isOwner();
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create, update: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && reviewId == request.resource.data.gameId + '_' + request.auth.uid
+        && exists(/databases/$(database)/documents/unlocks/$(request.auth.uid + '_' + request.resource.data.gameId))
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() <= 300
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 40;
+      allow delete: if isOwner()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
+    match /coupons/{code} {
+      allow get: if signedIn();
+      allow list, create, update, delete: if canManageCoupons();
+    }
+
+    match /couponUses/{useId} {
+      allow get: if isOwner()
+        || (signedIn() && useId.matches('.*_' + request.auth.uid));
+      allow list: if isOwner();
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && useId == request.resource.data.code + '_' + request.auth.uid;
+      allow update: if false;
+      allow delete: if isOwner() || canProcessOrders();
+    }
+
+    match /popups/{id} {
+      allow read: if true;
+      allow write: if canManagePopups();
+    }
+
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if canManageSettings();
+    }
+
+    match /gameRequests/{id} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.gameName is string
+        && request.resource.data.gameName.size() > 0
+        && request.resource.data.gameName.size() <= 80
+        && request.resource.data.note.size() <= 300;
+      allow read: if canManageRequests()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update, delete: if canManageRequests();
+    }
+
+    match /linkReports/{id} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && id == request.resource.data.gameId + '_' + request.auth.uid
+        && exists(/databases/$(database)/documents/unlocks/$(request.auth.uid + '_' + request.resource.data.gameId));
+      allow read, update, delete: if canManageRequests();
+    }
+  }
+}

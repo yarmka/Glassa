@@ -1,0 +1,22 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "dev": "pnpm --filter @workspace/glassa-store dev",
+    "build": "pnpm run build:web",
+    "build:web": "pnpm --filter @workspace/glassa-store build",
+    "preview": "pnpm --filter @workspace/glassa-store serve",
+    "typecheck": "pnpm run typecheck:libs && pnpm --filter @workspace/glassa-store typecheck && pnpm --filter @workspace/api-server typecheck",
+    "build:server": "pnpm --filter @workspace/api-server build",
+    "start:server": "pnpm --filter @workspace/api-server start"
+  },
+  "private": true,
+  "dependencies": {
+    "@replit/connectors-sdk": "^0.4.3"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
+  }
+}
